@@ -1432,6 +1432,11 @@ async function handlePlacesReviews(res, qs) {
       jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });
       return;
     }
+    if (r.status !== 'OK') {
+      const detail = r.error_message || r.status || 'UNKNOWN_ERROR';
+      jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });
+      return;
+    }
     const result = r.result || {};
     const reviews = (result.reviews || []).map(rev => ({
       author_name: rev.author_name,

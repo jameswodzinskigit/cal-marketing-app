@@ -1344,19 +1344,7 @@ function loadStripeConnect() { try { if (fs.existsSync(STRIPE_TOKEN_FILE)) retur
 function saveStripeConnect(data) { fs.writeFileSync(STRIPE_TOKEN_FILE, JSON.stringify(data, null, 2)); }
 function deleteStripeConnect() { try { if (fs.existsSync(STRIPE_TOKEN_FILE)) fs.unlinkSync(STRIPE_TOKEN_FILE); } catch (e) {} }
 
-// Auto-seed Stripe config on startup if key is set but file is missing
-if (process.env.STRIPE_SECRET_KEY && !fs.existsSync(STRIPE_TOKEN_FILE)) {
-  stripeApiRequest('GET', '/v1/account', null).then(function(r) {
-    if (r.status === 200 && r.body && r.body.id) {
-      saveStripeConnect({ accountId: r.body.id, email: r.body.email, country: r.body.country, connectedAt: Date.now() });
-      console.log('[Stripe] Auto-seeded config for account', r.body.id);
-    } else {
-      console.warn('[Stripe] Auto-seed: unexpected response status', r.status);
-    }
-  }).catch(function(e) {
-    console.error('[Stripe] Auto-seed failed:', e.message);
-  });
-}
+// (Stripe auto-seed removed — it triggered a failing API call on every boot)
 
 async function handleStripeConnect(req, res) {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -1517,27 +1505,7 @@ function handleNfcTapsGet(req, res, qs) {
   }
 }
 
-function _handleNfcTapsGet_REPLACED(req, res, qs) {
-  const rawToken = extractBearerToken(req);
-  const payload = rawToken ? verifyMetaToken(rawToken) : null;
-  if (!payload) { jsonResponse(res, 401, { error: 'UNAUTHORIZED' }); return; }
-  const account = qs.account || payload.email;
-  try {
-    const tapLog = path.join(__dirname, '.nfc-taps.json');
-    let taps = [];
-    try { taps = JSON.parse(fs.readFileSync(tapLog, 'utf8')); } catch(e) {}
-    // Filter taps to those belonging to cards registered under this account
-    const store = loadMetaStore();
-    const cards = store[`nfc_cards_${account}`] || [];
-    const cardNames = new Set(cards.map(c => c.name.toLowerCase()));
-    const filtered = taps.filter(t => cardNames.has((t.person || '').toLowerCase()));
-    // Return with tapped_at field name matching what the client expects
-    const result = filtered.map(t => ({ person: t.person, tapped_at: t.ts, ip: t.ip || '' }));
-    jsonResponse(res, 200, { taps: result });
-  } catch(e) {
-    jsonResponse(res, 500, { error: e.message, taps: [] });
-  }
-}
+// _handleNfcTapsGet_REPLACED removed — dead code, never called
 
 async function handleNfcCardsPost(req, res) {
   const rawToken = extractBearerToken(req);
@@ -1627,15 +1595,18 @@ async function handleDriversStats(req, res, qs) {
 
 
 // ============ NFC TAP LANDING PAGE ============
+let _nfcWriteQueue = Promise.resolve();
 function logNfcTap(person, accountId, req) {
-  try {
-    const tapLog = path.join(__dirname, '.nfc-taps.json');
-    let taps = [];
-    try { taps = JSON.parse(fs.readFileSync(tapLog, 'utf8')); } catch(e) {}
-    taps.push({ person, accountId: accountId || 'unknown', ts: new Date().toISOString(), ip: req.socket?.remoteAddress || '', reviewClick: false });
-    if (taps.length > 5000) taps = taps.slice(-5000);
-    fs.writeFileSync(tapLog, JSON.stringify(taps));
-  } catch(e) {}
+  _nfcWriteQueue = _nfcWriteQueue.then(() => {
+    try {
+      const tapLog = path.join(__dirname, '.nfc-taps.json');
+      let taps = [];
+      try { taps = JSON.parse(fs.readFileSync(tapLog, 'utf8')); } catch(e) {}
+      taps.push({ person, accountId: accountId || 'unknown', ts: new Date().toISOString(), ip: req.socket?.remoteAddress || '', reviewClick: false });
+      if (taps.length > 5000) taps = taps.slice(-5000);
+      fs.writeFileSync(tapLog, JSON.stringify(taps));
+    } catch(e) {}
+  });
 }
 
 function buildDriverPage(person, reviewUrl) {
@@ -2305,7 +2276,7 @@ async function githubApiRequest(method, apiPath, pat, body) {
 async function handleGithubPush(req, res) {
   const pat = process.env.GITHUB_PAT;
   if (!pat) return jsonResponse(res, 400, { ok: false, error: 'GITHUB_PAT secret not set.' });
-  const owner = 'chriskraichgit';
+  const owner = 'jameswodzinskigit';
   const repo = 'cal-marketing-app';
   const branch = 'main';
   try {

@@ -4,6 +4,7 @@
   "description": "CAL Marketing OS",
   "main": "server.js",
   "scripts": {
+    "prestart": "node prestart.js",
     "start": "node server.js",
     "install-deps": "npm install"
   },

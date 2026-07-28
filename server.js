@@ -1407,11 +1407,12 @@ async function handleStripeDisconnect(res) {
 // ============ GOOGLE PLACES REVIEWS (no OAuth) ============
 async function handlePlacesReviews(res, qs) {
   const account = qs.account || '';
-  const accountData = ACCOUNT_PLACE_IDS[account];
+  const normalizedAccount = String(account).toLowerCase().replace(/[^a-z0-9@.]/g, '');
+  const accountData = ACCOUNT_PLACE_IDS[account] || ACCOUNT_PLACE_IDS[normalizedAccount] || (normalizedAccount === 'greencollar' ? { placeId: 'ChIJJ8-biosyw4kR738ilrfxrbU', name: 'Green Collar Roofing & Exteriors' } : null);
   if (!accountData) { jsonResponse(res, 400, { error: 'Unknown account' }); return; }
   const placeId = accountData.placeId;
-  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) { jsonResponse(res, 200, { error: 'GOOGLE_MAPS_API_KEY not set', reviews: [] }); return; }
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_API_KEY || process.env.MAPS_API_KEY;
+  if (!apiKey) { jsonResponse(res, 503, { error: 'Google Maps API key is not configured. Add GOOGLE_MAPS_API_KEY in Replit Secrets.', reviews: [] }); return; }
   try {
     const r = await new Promise((resolve, reject) => {
       const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,rating,user_ratings_total,reviews&key=${apiKey}`;
@@ -1421,6 +1422,11 @@ async function handlePlacesReviews(res, qs) {
         res2.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve({}); } });
       }).on('error', reject);
     });
+    if (r.status !== 'OK') {
+      const detail = r.error_message || r.status || 'UNKNOWN_ERROR';
+      jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });
+      return;
+    }
     const result = r.result || {};
     const reviews = (result.reviews || []).map(rev => ({
       author_name: rev.author_name,
@@ -1820,7 +1826,7 @@ const server = http.createServer(async (req, res) => {
   if (urlPath === '/api/config' && req.method === 'GET') {
     // SECURITY NOTE (C-5): The Maps API key returned here should be restricted to this app's
     // domain in Google Cloud Console -> APIs & Services -> Credentials to prevent key abuse.
-    jsonResponse(res, 200, { mapsKey: process.env.GOOGLE_MAPS_API_KEY || '' });
+    jsonResponse(res, 200, { mapsKey: process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_API_KEY || process.env.MAPS_API_KEY || '' });
     return;
   }
 
@@ -2234,7 +2240,7 @@ async function handleGithubStatus(req, res) {
     const result = await new Promise((resolve, reject) => {
       const opts = {
         hostname: 'api.github.com',
-        path: '/repos/chriskraichgit/cal-marketing-app',
+        path: '/repos/jameswodzinskigit/cal-marketing-app',
         headers: { 'Authorization': 'token ' + pat, 'User-Agent': 'CAL-OS/1.0', 'Accept': 'application/vnd.github.v3+json' }
       };
       require('https').get(opts, r => {

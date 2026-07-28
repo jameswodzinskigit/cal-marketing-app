@@ -4,6 +4,7 @@ const crypto = require('crypto');
 
 const serverPath = path.join(__dirname, 'server.js');
 const indexPath = path.join(__dirname, 'index.html');
+const secretFile = path.join(__dirname, '.cal-meta-secret');
 
 function replaceAll(source, search, replacement, label) {
   if (!source.includes(search)) {
@@ -24,13 +25,9 @@ function replaceOnce(source, search, replacement, label) {
 }
 
 function ensurePersistentMetaSecret() {
-  if (process.env.CAL_META_SECRET) return;
-  const secretFile = path.join(__dirname, '.cal-meta-secret');
-  if (!fs.existsSync(secretFile)) {
-    fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
-    console.log('[prestart] Created persistent local CAL_META_SECRET.');
-  }
-  process.env.CAL_META_SECRET = fs.readFileSync(secretFile, 'utf8').trim();
+  if (process.env.CAL_META_SECRET || fs.existsSync(secretFile)) return;
+  fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
+  console.log('[prestart] Created persistent local CAL_META_SECRET file.');
 }
 
 try {
@@ -38,6 +35,13 @@ try {
 
   let server = fs.readFileSync(serverPath, 'utf8');
   server = server.split('chriskraichgit').join('jameswodzinskigit');
+
+  server = replaceOnce(
+    server,
+    "const META_SECRET = process.env.CAL_META_SECRET || crypto.randomBytes(32).toString('hex');",
+    "const META_SECRET = process.env.CAL_META_SECRET || fs.readFileSync(path.join(__dirname, '.cal-meta-secret'), 'utf8').trim();",
+    'persistent CAL session signing secret'
+  );
 
   server = replaceOnce(
     server,

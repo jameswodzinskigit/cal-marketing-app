@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { google } = require('googleapis');
 const { URL } = require('url');
+const { SupabaseStore } = require('./supabase-store');
 
 function htmlEscape(str) {
   return String(str)
@@ -20,6 +21,11 @@ const HOST = '0.0.0.0';
 const TOKEN_FILE = path.join(__dirname, '.gdrive-tokens.json');
 const GOOGLE_TOKEN_FILE = path.join(__dirname, '.google-tokens.json');
 const META_STORE_FILE = path.join(__dirname, '.cal-meta-store.json');
+const supabase = new SupabaseStore();
+
+function warnSupabaseFallback(operation, error) {
+  console.warn(`[supabase] ${operation} failed; using local fallback: ${error.message}`);
+}
 
 // ── Place IDs per account (no OAuth needed — uses Places API) ──
 const ACCOUNT_PLACE_IDS = {
@@ -36,18 +42,23 @@ const ACCOUNT_FEATURES = {
 };
 const DEFAULT_FEATURES = { nfc: true, reviews: true, drive: true, calendar: true, stripe: true, searchConsole: true };
 
-// Known users for server-side meta token issuance.
-// Passwords are stored as SHA-256 hashes only — never plaintext.
-// Agency/test roles may access any account key; admin/user roles may only access their own email key.
-const SERVER_USERS = {
-  'chris@cal.marketing':           { pwHash: '7558d21cd40326eb0d89abd3d35ca3f1a207d1b6f82c07023ea49e4e42d13029', role: 'superadmin', calRole: 'superadmin', accounts: ['info@unitedsewerservice.com','greencollar','willydiamond'] },
-  'james@cal.marketing':           { pwHash: '7558d21cd40326eb0d89abd3d35ca3f1a207d1b6f82c07023ea49e4e42d13029', role: 'superadmin', calRole: 'superadmin', accounts: ['info@unitedsewerservice.com','greencollar','willydiamond'] },
-  'matt@cal.marketing':            { pwHash: '7558d21cd40326eb0d89abd3d35ca3f1a207d1b6f82c07023ea49e4e42d13029', role: 'superadmin', calRole: 'superadmin', accounts: ['info@unitedsewerservice.com','greencollar','willydiamond'] },
-  'info@cal.marketing':            { pwHash: '7558d21cd40326eb0d89abd3d35ca3f1a207d1b6f82c07023ea49e4e42d13029', role: 'test',       calRole: 'superadmin', accounts: ['info@unitedsewerservice.com','greencollar','willydiamond'] },
-  'client@apexlegal.com':          { pwHash: '7e166f079a275064a2118127d7102a9471f671acb67a65a2c628684606b5e11f', role: 'admin',       calRole: 'client',     accounts: ['client@apexlegal.com'] },
-  'staff@apexlegal.com':           { pwHash: '7df64b2903b0ac2dc591ee097c36f4acdae759753bd197eaf11008093e2966ca', role: 'user',        calRole: 'client',     accounts: ['client@apexlegal.com'] },
-  'info@unitedsewerservice.com':   { pwHash: 'c87b71ef7b9882f404028ae7d5431cc6fdb73b64cfe52e9dc0501ff3dbe1a580', role: 'admin',       calRole: 'client',     accounts: ['info@unitedsewerservice.com'] },
-};
+// Known users are supplied at runtime, never committed to source control.
+// CAL_SERVER_USERS_JSON is an object keyed by lowercase email. Each value may
+// contain pwHash (SHA-256), role, calRole, accounts, and displayName.
+function loadServerUsers() {
+  if (!process.env.CAL_SERVER_USERS_JSON) return {};
+  try {
+    const parsed = JSON.parse(process.env.CAL_SERVER_USERS_JSON);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('expected an object');
+    return Object.fromEntries(Object.entries(parsed).filter(([, user]) => (
+      user && typeof user === 'object' && /^[a-f0-9]{64}$/i.test(user.pwHash || '')
+    )));
+  } catch (error) {
+    console.error(`[auth] CAL_SERVER_USERS_JSON is invalid: ${error.message}`);
+    return {};
+  }
+}
+const SERVER_USERS = loadServerUsers();
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (non-driver)
 const DRIVER_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 year for drivers
@@ -679,22 +690,19 @@ async function handleMyDriverStats(req, res, payload) {
 
   if (!driverName) return jsonResponse(res, 400, { error: 'NO_DRIVER_NAME' });
 
-  const SUPABASE_URL = process.env.SUPABASE_URL;
-  const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
   const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
   const monthAgo = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
 
   let taps = [];
-  if (SUPABASE_URL && SUPABASE_KEY) {
+  if (supabase.configured) {
     try {
-      const tapUrl = `${SUPABASE_URL}/rest/v1/nfc_taps?select=person,tapped_at&person=eq.${encodeURIComponent(driverName)}&order=tapped_at.desc&limit=1000`;
-      const r = await fetch(tapUrl, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
-      const j = await r.json();
-      if (Array.isArray(j)) taps = j;
-    } catch (e) { taps = []; }
+      taps = await supabase.getNfcTaps(account, driverName, 1000);
+    } catch (error) {
+      warnSupabaseFallback('load driver NFC taps', error);
+      taps = [];
+    }
   } else {
     // Fallback: read from local tap log
     try {
@@ -710,13 +718,13 @@ async function handleMyDriverStats(req, res, payload) {
   const cardNames = cards.map(c => c.name || c);
 
   let allTaps = [];
-  if (SUPABASE_URL && SUPABASE_KEY && cardNames.length) {
+  if (supabase.configured && cardNames.length) {
     try {
-      const allUrl = `${SUPABASE_URL}/rest/v1/nfc_taps?select=person,tapped_at&order=tapped_at.desc&limit=5000`;
-      const r2 = await fetch(allUrl, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
-      const j2 = await r2.json();
-      if (Array.isArray(j2)) allTaps = j2;
-    } catch (e) { allTaps = []; }
+      allTaps = await supabase.getNfcTaps(account, null, 5000);
+    } catch (error) {
+      warnSupabaseFallback('load company NFC taps', error);
+      allTaps = [];
+    }
   } else if (cardNames.length) {
     try {
       const tapLog = require('path').join(__dirname, '.nfc-taps.json');
@@ -778,22 +786,19 @@ async function handleDriverStats(req, res, payload) {
   const todayStart = new Date(new Date().setHours(0,0,0,0)).toISOString();
 
   // Fallback if no Supabase
-  const SUPABASE_URL = process.env.SUPABASE_URL;
-  const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
+  if (!supabase.configured) {
     return jsonResponse(res, 200, { drivers: cards.map(c => ({ name: c.name || c, taps: { today: 0, week: 0, month: 0, alltime: 0 }, lastTap: null, active: false, daily: {} })), period, account });
   }
 
   // Fetch all taps for these cards from Supabase
   const cardNames = cards.map(c => c.name || c);
-  const tapUrl = SUPABASE_URL + '/rest/v1/nfc_taps?select=person,tapped_at&order=tapped_at.desc&limit=5000';
   let taps = [];
   try {
-    const tapReq = await fetch(tapUrl, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY } });
-    taps = await tapReq.json();
-    if (!Array.isArray(taps)) taps = [];
-  } catch(e) { taps = []; }
+    taps = await supabase.getNfcTaps(account, null, 5000);
+  } catch(error) {
+    warnSupabaseFallback('load driver leaderboard taps', error);
+    taps = [];
+  }
 
   // Aggregate per driver
   const drivers = cardNames.map(name => {
@@ -1206,6 +1211,7 @@ async function handleGBPReviews(res, qs) {
   const oauth2 = getGoogleAuthedClient();
   if (!oauth2) { jsonResponse(res, 200, { error: 'NOT_CONNECTED', reviews: [] }); return; }
   const location = qs.location;
+  const accountKey = String(qs.company || qs.account || '').trim().toLowerCase();
   if (!location) { jsonResponse(res, 400, { error: 'MISSING_LOCATION' }); return; }
   try {
     const r = await googleApiGet(oauth2, `https://mybusiness.googleapis.com/v4/${location}/reviews?pageSize=50&orderBy=${encodeURIComponent('updateTime desc')}`);
@@ -1213,10 +1219,25 @@ async function handleGBPReviews(res, qs) {
       jsonResponse(res, r.status || 502, { error: r.body?.error?.message || 'GOOGLE_API_ERROR', reviews: [] });
       return;
     }
+    const reviews = r.body.reviews || [];
+    const averageRating = r.body.averageRating || null;
+    const totalReviewCount = r.body.totalReviewCount || 0;
+    if (supabase.configured && accountKey) {
+      try {
+        await supabase.saveReviews(
+          accountKey,
+          reviews,
+          { averageRating, totalReviewCount },
+          'google_business_profile'
+        );
+      } catch (error) {
+        warnSupabaseFallback('save Google Business Profile reviews', error);
+      }
+    }
     jsonResponse(res, 200, {
-      reviews: r.body.reviews || [],
-      averageRating: r.body.averageRating || null,
-      totalReviewCount: r.body.totalReviewCount || 0,
+      reviews,
+      averageRating,
+      totalReviewCount,
       nextPageToken: r.body.nextPageToken || null,
       fetchedAt: new Date().toISOString()
     });
@@ -1408,7 +1429,18 @@ async function handleStripeDisconnect(res) {
 async function handlePlacesReviews(res, qs) {
   const account = qs.account || '';
   const normalizedAccount = String(account).toLowerCase().replace(/[^a-z0-9@.]/g, '');
-  const accountData = ACCOUNT_PLACE_IDS[account] || ACCOUNT_PLACE_IDS[normalizedAccount] || (normalizedAccount === 'greencollar' ? { placeId: 'ChIJJ8-biosyw4kR738ilrfxrbU', name: 'Green Collar Roofing & Exteriors' } : null);
+  let accountData = ACCOUNT_PLACE_IDS[account] || ACCOUNT_PLACE_IDS[normalizedAccount] || null;
+  if (supabase.configured) {
+    try {
+      const company = await supabase.getCompany(normalizedAccount);
+      const location = company ? await supabase.getPrimaryLocation(company.id) : null;
+      if (company && location?.google_place_id) {
+        accountData = { placeId: location.google_place_id, name: location.name || company.name };
+      }
+    } catch (error) {
+      warnSupabaseFallback('load Google Place ID', error);
+    }
+  }
   if (!accountData) { jsonResponse(res, 400, { error: 'Unknown account' }); return; }
   const placeId = accountData.placeId;
   const apiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_API_KEY || process.env.MAPS_API_KEY;
@@ -1451,6 +1483,13 @@ async function handlePlacesReviews(res, qs) {
       store['reviews_cache_meta_' + account] = { rating: out.rating, total: out.total, name: out.name, cachedAt: new Date().toISOString() };
       saveMetaStoreQueued(store);
     } catch(e) {}
+    if (supabase.configured) {
+      try {
+        await supabase.saveReviews(normalizedAccount, reviews, { rating: out.rating, total: out.total }, 'google_places');
+      } catch (error) {
+        warnSupabaseFallback('save Google Places reviews', error);
+      }
+    }
     jsonResponse(res, 200, out);
   } catch(e) { jsonResponse(res, 200, { error: e.message, reviews: [] }); }
 }
@@ -1462,7 +1501,15 @@ async function handleNfcCardsGet(req, res, qs) {
   if (!payload) { jsonResponse(res, 401, { error: 'UNAUTHORIZED' }); return; }
   const account = qs.account || payload.email;
   const store = loadMetaStore();
-  const cards = store[`nfc_cards_${account}`] || [];
+  let cards = store[`nfc_cards_${account}`] || [];
+  if (supabase.configured) {
+    try {
+      const persisted = await supabase.getNfcCards(account);
+      if (persisted.length || cards.length === 0) cards = persisted;
+    } catch (error) {
+      warnSupabaseFallback('load NFC cards', error);
+    }
+  }
   jsonResponse(res, 200, { cards });
 }
 
@@ -1486,7 +1533,7 @@ function getNfcCardStats(person, accountId) {
   } catch(e) { return { total:0, today:0, week:0, clicks:0, conversion:0, lastTap:null }; }
 }
 
-function handleNfcTapsGet(req, res, qs) {
+async function handleNfcTapsGet(req, res, qs) {
   const rawToken = extractBearerToken(req);
   const payload = rawToken ? verifyMetaToken(rawToken) : null;
   if (!payload) { jsonResponse(res, 401, { error: 'UNAUTHORIZED' }); return; }
@@ -1501,7 +1548,15 @@ function handleNfcTapsGet(req, res, qs) {
     const cardNames = new Set(cards.map(c => c.name.toLowerCase()));
     const filtered = taps.filter(t => t.accountId === account || cardNames.has((t.person||'').toLowerCase()));
     // Return enriched records
-    const result = filtered.map(t => ({ person: t.person, tapped_at: t.ts, ip: t.ip||'', reviewClick: !!t.reviewClick }));
+    let result = filtered.map(t => ({ person: t.person, tapped_at: t.ts, ip: t.ip||'', reviewClick: !!t.reviewClick }));
+    if (supabase.configured) {
+      try {
+        const persisted = await supabase.getNfcTaps(account);
+        if (persisted.length || result.length === 0) result = persisted;
+      } catch (error) {
+        warnSupabaseFallback('load NFC taps', error);
+      }
+    }
     // Also compute per-card stats
     const stats = {};
     cards.forEach(c => { stats[c.name] = getNfcCardStats(c.name, account); });
@@ -1540,6 +1595,13 @@ async function handleNfcCardsPost(req, res) {
   cards.push(card);
   store[key] = cards;
   saveMetaStoreQueued(store);
+  if (supabase.configured) {
+    try {
+      await supabase.saveNfcCard(acct, card);
+    } catch (error) {
+      warnSupabaseFallback('save NFC card', error);
+    }
+  }
   jsonResponse(res, 200, { ok: true, card, tapUrl: `/tap/${encodeURIComponent(card.id)}` });
 }
 
@@ -1557,6 +1619,13 @@ async function handleNfcCardsDelete(req, res) {
   const cards = (store[`nfc_cards_${account}`] || []).filter(c => c.name !== name);
   store[`nfc_cards_${account}`] = cards;
   saveMetaStoreQueued(store);
+  if (supabase.configured) {
+    try {
+      await supabase.disableNfcCard(account, name);
+    } catch (error) {
+      warnSupabaseFallback('disable NFC card', error);
+    }
+  }
   jsonResponse(res, 200, { ok: true, remaining: cards.length });
 }
 
@@ -1612,6 +1681,13 @@ function logNfcTap(person, accountId, req) {
       if (taps.length > 5000) taps = taps.slice(-5000);
       fs.writeFileSync(tapLog, JSON.stringify(taps));
     } catch(e) {}
+    if (supabase.configured && accountId && accountId !== 'unknown') {
+      return supabase.saveNfcTap(accountId, person, {
+        ip: req.socket?.remoteAddress || '',
+        referrer: req.headers?.referer || null,
+        userAgent: req.headers?.['user-agent'] || null,
+      }).catch(error => warnSupabaseFallback('save NFC tap', error));
+    }
   });
 }
 
@@ -1830,6 +1906,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (urlPath === '/api/supabase/health' && req.method === 'GET') {
+    const health = await supabase.health();
+    jsonResponse(res, health.connected ? 200 : 503, health);
+    return;
+  }
+
   if (urlPath === '/api/drive/connect' && req.method === 'GET') {
     await handleConnect(res);
     return;
@@ -1868,7 +1950,11 @@ const server = http.createServer(async (req, res) => {
       jsonResponse(res, 429, { ok: false, error: 'Too many attempts', remaining: rateCheck.remaining });
       return;
     }
-    const AGENCY_PIN = process.env.AGENCY_PIN || '2026';
+    const AGENCY_PIN = process.env.AGENCY_PIN;
+    if (!AGENCY_PIN) {
+      jsonResponse(res, 503, { ok: false, error: 'Agency PIN login is not configured' });
+      return;
+    }
     if (!secureStringEqual(pin, AGENCY_PIN)) {
       recordLoginFailure(rateKey);
       jsonResponse(res, 401, { ok: false, error: 'Invalid PIN' });
@@ -2022,6 +2108,18 @@ const server = http.createServer(async (req, res) => {
       store['reviews_cache_' + acct] = reviews;
       if (body.meta) store['reviews_cache_meta_' + acct] = { ...body.meta, cachedAt: new Date().toISOString() };
       await saveMetaStoreQueued(store);
+      if (supabase.configured) {
+        try {
+          await supabase.saveReviews(
+            acct,
+            reviews,
+            body.meta || {},
+            body.source === 'google_places' ? 'google_places' : 'google_business_profile'
+          );
+        } catch (error) {
+          warnSupabaseFallback('save review cache', error);
+        }
+      }
       jsonResponse(res, 200, { ok: true, count: reviews.length });
     } catch(e) { jsonResponse(res, 400, { error: e.message }); }
     return;
@@ -2105,16 +2203,36 @@ const server = http.createServer(async (req, res) => {
     const tapLog = path.join(__dirname, '.nfc-taps.json');
     let taps = [];
     try { taps = JSON.parse(fs.readFileSync(tapLog, 'utf8')); } catch(e) {}
-    const acctTaps = taps.filter(t => t.accountId === acct);
+    let acctTaps = taps.filter(t => t.accountId === acct)
+      .map(t => ({ person: t.person, tapped_at: t.ts, reviewClick: Boolean(t.reviewClick) }));
     const now = new Date();
     const weekAgo = new Date(now - 7*24*60*60*1000).toISOString();
-    const weekTaps = acctTaps.filter(t => t.ts >= weekAgo).length;
+    let weekTaps = acctTaps.filter(t => t.tapped_at >= weekAgo).length;
     // Reviews from store
     const store = loadMetaStore();
-    const reviews = store['reviews_cache_' + acct] || [];
-    const total = reviews.length;
-    const avgRaw = total ? reviews.reduce((s, r) => s + (r.rating || 0), 0) / total : 0;
-    const avg = avgRaw ? Math.round(avgRaw * 10) / 10 : null;
+    let reviews = store['reviews_cache_' + acct] || [];
+    let snapshot = null;
+    if (supabase.configured) {
+      try {
+        const [persistedReviews, persistedTaps, persistedSnapshot] = await Promise.all([
+          supabase.getReviews(acct),
+          supabase.getNfcTaps(acct),
+          supabase.getLatestReviewSnapshot(acct),
+        ]);
+        if (persistedReviews.length || reviews.length === 0) reviews = persistedReviews;
+        if (persistedTaps.length || acctTaps.length === 0) acctTaps = persistedTaps;
+        snapshot = persistedSnapshot;
+        weekTaps = acctTaps.filter(t => t.tapped_at >= weekAgo).length;
+      } catch (error) {
+        warnSupabaseFallback('load home statistics', error);
+      }
+    }
+    const storedReviewCount = reviews.length;
+    const total = snapshot?.total_reviews ?? storedReviewCount;
+    const avgRaw = storedReviewCount ? reviews.reduce((s, r) => s + (Number(r.rating) || 0), 0) / storedReviewCount : 0;
+    const avg = snapshot?.average_rating != null
+      ? Number(snapshot.average_rating)
+      : (avgRaw ? Math.round(avgRaw * 10) / 10 : null);
     const weekReviews = reviews.filter(r => {
       const d = r.date || r.createTime || r.time;
       if (!d) return false;
@@ -2318,6 +2436,12 @@ async function handleGithubPush(req, res) {
   }
 }
 
-server.listen(PORT, HOST, () => {
+server.listen(PORT, HOST, async () => {
   console.log(`Server running at http://${HOST}:${PORT}/`);
+  const health = await supabase.health();
+  if (health.connected) {
+    console.log(`[supabase] connected to ${health.projectRef}`);
+  } else {
+    console.warn(`[supabase] not connected: ${health.reason}`);
+  }
 });

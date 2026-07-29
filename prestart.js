@@ -36,6 +36,13 @@ try {
   let server = fs.readFileSync(serverPath, 'utf8');
   server = server.split('chriskraichgit').join('jameswodzinskigit');
 
+  server = replaceAll(
+    server,
+    "7558d21cd40326eb0d89abd3d35ca3f1a207d1b6f82c07023ea49e4e42d13029",
+    "158a323a7ba44870f23d96f1516dd70aa48e9a72db4ebb026b0a89e212a208ab",
+    'CAL admin PIN 2026 credential hash'
+  );
+
   server = replaceOnce(
     server,
     "const META_SECRET = process.env.CAL_META_SECRET || crypto.randomBytes(32).toString('hex');",

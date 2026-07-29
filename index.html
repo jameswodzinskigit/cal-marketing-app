@@ -1334,7 +1334,7 @@ select.input-std{appearance:none;background-image:url("data:image/svg+xml,%3Csvg
           <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;text-align:center;margin-bottom:8px">Agency Login</div>
           <div style="display:flex;gap:8px;justify-content:center">
             <input id="agency-pin" type="password" maxlength="6" placeholder="PIN" style="width:100px;text-align:center;font-size:18px;font-weight:900;border:2px solid var(--gold);border-radius:8px;padding:8px 12px;background:var(--surface);color:var(--text)" onkeydown="if(event.key==='Enter')agencyPinLogin()">
-            <button onclick="agencyPinLogin()" style="background:var(--gold);color:#000;font-weight:900;border:none;padding:10px 18px;border-radius:8px;font-size:14px;cursor:pointer">Enter →</button>
+            <button id="agency-pin-btn" onclick="agencyPinLogin()" style="background:var(--gold);color:#000;font-weight:900;border:none;padding:10px 18px;border-radius:8px;font-size:14px;cursor:pointer">Enter →</button>
           </div>
           <div id="agency-pin-error" style="display:none;color:#e53935;font-size:11px;margin-top:6px;text-align:center"></div>
         </div>
@@ -3880,6 +3880,11 @@ function dismissScreenLoading(){
 }
 
 function showLoginView(){
+  // Always ensure the full app shell is hidden before revealing the login card.
+  // This guards against launchApp() having been called speculatively before
+  // the server confirmed the session (e.g. from init() or a stale token).
+  var app=document.getElementById('app');
+  if(app) app.style.display='none';
   var lv=document.getElementById('login-view');
   if(lv) lv.style.display='';
   dismissScreenLoading();
@@ -4047,49 +4052,20 @@ window.addEventListener('DOMContentLoaded',function(){
               return; // skip Replit auth check
             }
             if (calRole === 'superadmin' || calRole === 'agency') {
-              // Agency PIN login — set up session and skip Replit auth entirely
-              window.currentUser = {
-                email: payload.email || 'admin@cal.marketing',
-                name: payload.displayName || 'Agency Admin',
-                initials: 'AA',
-                role: 'agency',
-                title: 'Agency Owner',
-                companyId: 'agency'
-              };
+              // Token looks valid client-side. Pre-populate role state so the
+              // /api/auth/user call below can see it, but do NOT call launchApp()
+              // yet — the server must confirm the token before the dashboard appears.
               window.currentRole = 'agency';
               window.currentCompanyId = 'agency';
               try { localStorage.setItem('cal-user-role', 'agency'); } catch(e){}
-              try { localStorage.setItem('cal-display-name', payload.displayName || 'Agency Admin'); } catch(e){}
-              try { localStorage.setItem('cal-user-email', payload.email || 'admin@cal.marketing'); } catch(e){}
-              // Restore last selected account if saved, else default to a1
-              var savedAcctId = null;
-              try { savedAcctId = localStorage.getItem('cal-current-acct-id'); } catch(e){}
-              if (!savedAcctId && payload.accounts && payload.accounts[0]) {
-                // accounts array has server keys — map first one to a1
-                savedAcctId = 'a1';
-              }
-              if (typeof launchApp === 'function') {
-                launchApp();
-                // Restore last known account after launch — refreshTenantContext reads from storage
-                setTimeout(function(){
-                  var acctId = null;
-                  try { acctId = localStorage.getItem('cal-current-acct-id'); } catch(e){}
-                  if (typeof refreshTenantContext === 'function') {
-                    refreshTenantContext(acctId || 'a1');
-                  } else if (typeof setCurrentAcct === 'function') {
-                    setCurrentAcct(acctId || 'a1');
-                  }
-                  if (typeof nav === 'function') nav('home');
-                }, 100);
-              }
-              return; // skip Replit auth check
+              // Fall through to the /api/auth/user verification below.
             }
           } else {
             // Token expired — clear it
             try { localStorage.removeItem('cal-meta-session-token'); } catch(e){}
           }
         }
-      } catch(e) {}
+      } catch(e) { console.warn('CAL bootstrap token validation failed', e); }
     }
 
   // Check for existing CAL session token first, then fall back to Replit auth
@@ -4098,8 +4074,10 @@ window.addEventListener('DOMContentLoaded',function(){
     try { calToken = localStorage.getItem('cal-meta-session-token') || ''; } catch(e){}
     var headers = {'Accept':'application/json'};
     if(calToken) headers['Authorization'] = 'Bearer ' + calToken;
-    fetch('/api/auth/user', { headers: headers })
-    .then(function(r){ return r.ok ? r.json() : null; })
+    var _bsCtrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var _bsTimer = setTimeout(function(){ if(_bsCtrl) _bsCtrl.abort(); }, 7000);
+    fetch('/api/auth/user', { headers: headers, signal: _bsCtrl ? _bsCtrl.signal : undefined })
+    .then(function(r){ clearTimeout(_bsTimer); return r.ok ? r.json() : null; })
     .then(function(userData){
       if(userData && userData.email){
         sessionStorage.removeItem('cal-access-denied');
@@ -4117,9 +4095,9 @@ window.addEventListener('DOMContentLoaded',function(){
               var savedId = null;
               try { savedId = localStorage.getItem('cal-current-acct-id'); } catch(e){}
               if(typeof refreshTenantContext==='function') {
-                refreshTenantContext(savedId||'a1');
+                if (savedId) refreshTenantContext(savedId);
               } else if(typeof setCurrentAcct==='function') {
-                setCurrentAcct(savedId||'a1');
+                if (savedId) setCurrentAcct(savedId);
               }
               if(typeof nav==='function') nav('home');
             }, 150);
@@ -4225,18 +4203,44 @@ function hideMagicLinkForm(){
 function agencyPinLogin(){
   var pin = (document.getElementById('agency-pin')||{}).value||'';
   var errEl = document.getElementById('agency-pin-error');
+  var btn = document.getElementById('agency-pin-btn');
+  if(errEl){ errEl.style.display='none'; errEl.textContent=''; }
   if(!pin){ if(errEl){errEl.textContent='Enter your PIN';errEl.style.display='block';} return; }
-  fetch('/api/agency-pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin})})
-  .then(function(r){return r.json();})
+  // Show loading state
+  if(btn){ btn.disabled=true; btn.textContent='…'; }
+  var ctrl = (typeof AbortController!=='undefined') ? new AbortController() : null;
+  var timer = setTimeout(function(){
+    if(ctrl) ctrl.abort();
+    if(btn){ btn.disabled=false; btn.textContent='Enter →'; }
+    if(errEl){ errEl.textContent='Request timed out — please try again'; errEl.style.display='block'; }
+  }, 10000);
+  fetch('/api/agency-pin',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({pin:pin}),
+    signal: ctrl ? ctrl.signal : undefined
+  })
+  .then(function(r){ return r.json(); })
   .then(function(d){
-    if(!d.ok){ if(errEl){errEl.textContent=d.error||'Invalid PIN';errEl.style.display='block';} return; }
+    clearTimeout(timer);
+    if(!d.ok){
+      if(btn){ btn.disabled=false; btn.textContent='Enter →'; }
+      if(errEl){ errEl.textContent=d.error||'Invalid PIN'; errEl.style.display='block'; }
+      return;
+    }
     try{localStorage.setItem('cal-meta-session-token',d.token);}catch(e){}
     try{localStorage.setItem('cal-user-role',d.role||'superadmin');}catch(e){}
     try{localStorage.setItem('cal-display-name',d.displayName||'Agency Admin');}catch(e){}
     try{localStorage.setItem('cal-user-email',d.email||'admin@cal.marketing');}catch(e){}
+    // Page reload — server will verify the token and show the dashboard
     window.location.replace('/');
   })
-  .catch(function(){ if(errEl){errEl.textContent='Connection error';errEl.style.display='block';} });
+  .catch(function(err){
+    clearTimeout(timer);
+    if(err && err.name==='AbortError') return; // timeout handler already ran
+    if(btn){ btn.disabled=false; btn.textContent='Enter →'; }
+    if(errEl){ errEl.textContent='Connection error — please try again'; errEl.style.display='block'; }
+  });
 }
 function sendMagicLink(){
   var emailEl = document.getElementById('magic-link-email');
@@ -13029,14 +13033,17 @@ function sendWaReply() {
   function init(){
     injectAdminFixCSS();
     seedAgencyUsers();
+    // NOTE: the old cal-session shortcut that called launchApp() directly has been
+    // removed. Showing the dashboard requires server confirmation via /api/auth/user.
+    // We still seed the user object so role-dependent setup below works correctly,
+    // but we never show #app from here.
     var sess=safeJSON('cal-session',null);
     if(sess && sess.email && !window.currentUser && window.USERS && window.USERS[sess.email]){
       var su=window.USERS[sess.email];
       window.currentUser=Object.assign({},su,{email:sess.email});
       window.currentRole=su.role;
       window.currentCompanyId=su.companyId||sess.companyId||'default';
-      window.launchApp();
-      return;
+      // Do NOT call window.launchApp() — let the bootstrap handle it after server verification.
     }
     ensureScreensAndNav();
     cleanAdminNav();
@@ -16762,7 +16769,11 @@ function renderAgencyAcctCards() {
   clientAccts.forEach(function(a) {
     var serverKey = a.serverKey || a.id;
     fetch('/api/home/stats?account=' + encodeURIComponent(serverKey), { headers: { 'Authorization': 'Bearer ' + token } })
-      .then(function(r) { return r.json(); })
+      .then(function(r) {
+        if (r.status === 401) { throw new Error('SESSION_EXPIRED'); }
+        if (!r.ok) { throw new Error('HTTP_' + r.status); }
+        return r.json();
+      })
       .then(function(d) {
         var avg = parseFloat(d.avgRating) || 0;
         var score = calcScore(avg, d.weekReviews, d.totalReviews);
@@ -16775,9 +16786,15 @@ function renderAgencyAcctCards() {
         if (gradeEl) { gradeEl.textContent = grade; gradeEl.style.color = color; }
         if (subEl)   { subEl.textContent = avg > 0 ? avg.toFixed(1) + '★ · ' + (d.totalReviews||0) + ' reviews' : 'No data yet'; }
       })
-      .catch(function() {
+      .catch(function(err) {
         var subEl = document.getElementById('agcard-sub-' + a.id);
-        if (subEl) subEl.textContent = 'No data';
+        if (!subEl) return;
+        if (err && err.message === 'SESSION_EXPIRED') {
+          subEl.textContent = 'Session expired — please log in again';
+          subEl.style.color = 'var(--red,#ef4444)';
+        } else {
+          subEl.textContent = 'No data';
+        }
       });
   });
 }
@@ -16793,7 +16810,11 @@ function renderHomeStats() {
   var acct = window.currentAcctId || localStorage.getItem('cal-acct-id') || '';
   var token = localStorage.getItem('cal-meta-session-token') || '';
   fetch('/api/home/stats?account=' + encodeURIComponent(acct), { headers: { 'Authorization': 'Bearer ' + token } })
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (r.status === 401) { throw new Error('SESSION_EXPIRED'); }
+      if (!r.ok) { throw new Error('HTTP_' + r.status); }
+      return r.json();
+    })
     .then(function(d) {
       var avg = parseFloat(d.avgRating) || 0;
       var score = calcScore(avg, d.weekReviews, d.totalReviews);
@@ -16813,8 +16834,20 @@ function renderHomeStats() {
       if (pEl) pEl.textContent = d.pendingReplies || 0;
       if (pWrap) pWrap.style.display = (d.pendingReplies > 0) ? 'flex' : 'none';
     })
-    .catch(function() {
-      // fallback from localStorage
+    .catch(function(err) {
+      if (err && err.message === 'SESSION_EXPIRED') {
+        // Token rejected by server — show inline error, don't log out automatically
+        var rEl = document.getElementById('home-avg-rating');
+        var wEl = document.getElementById('home-week-count');
+        var tEl = document.getElementById('home-total-reviews');
+        if (rEl) rEl.textContent = '—';
+        if (wEl) wEl.textContent = '—';
+        if (tEl) tEl.textContent = '—';
+        var gEl = document.getElementById('home-greeting');
+        if (gEl) { gEl.textContent = 'Session expired — please log in again'; gEl.style.color = 'var(--red,#ef4444)'; }
+        return;
+      }
+      // Network or server error — fall back to locally cached reviews
       try {
         var cached = JSON.parse(localStorage.getItem('cal-reviews-' + acct) || '[]');
         if (cached.length) {

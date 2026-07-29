@@ -54,7 +54,7 @@ const DRIVER_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 year for drivers
 
 // Secret is sourced from the environment (set CAL_META_SECRET in production for persistence).
 // If absent, a random ephemeral secret is generated at startup — tokens will not survive a restart.
-const META_SECRET = process.env.CAL_META_SECRET || crypto.randomBytes(32).toString('hex');
+const META_SECRET = process.env.CAL_META_SECRET || fs.readFileSync(path.join(__dirname, '.cal-meta-secret'), 'utf8').trim();
 
 function signMetaToken(payload) {
   const b64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -1422,26 +1422,6 @@ async function handlePlacesReviews(res, qs) {
         res2.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve({}); } });
       }).on('error', reject);
     });
-    if (r.status !== 'OK') {
-      const detail = r.error_message || r.status || 'UNKNOWN_ERROR';
-      jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });
-      return;
-    }
-    if (r.status !== 'OK') {
-      const detail = r.error_message || r.status || 'UNKNOWN_ERROR';
-      jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });
-      return;
-    }
-    if (r.status !== 'OK') {
-      const detail = r.error_message || r.status || 'UNKNOWN_ERROR';
-      jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });
-      return;
-    }
-    if (r.status !== 'OK') {
-      const detail = r.error_message || r.status || 'UNKNOWN_ERROR';
-      jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });
-      return;
-    }
     if (r.status !== 'OK') {
       const detail = r.error_message || r.status || 'UNKNOWN_ERROR';
       jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });

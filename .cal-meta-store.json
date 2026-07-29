@@ -1,3 +1,54 @@
 {
-  "messages_apexlegal": []
+  "messages_apexlegal": [],
+  "a4": {
+    "name": "Houses Auto Body",
+    "initials": "HA",
+    "plan": "Deluxe",
+    "color": "#7c3aed",
+    "logo": "",
+    "font": "Inter",
+    "language": "en",
+    "layoutPrefs_agency": {
+      "billing": {
+        "v": false,
+        "t": 1783538743601
+      },
+      "files": {
+        "v": false,
+        "t": 1783538742051
+      },
+      "schedule": {
+        "v": false,
+        "t": 1783538742719
+      },
+      "reviews": {
+        "v": false,
+        "t": 1783538739144
+      },
+      "analytics": {
+        "v": false,
+        "t": 1783538736990
+      },
+      "campaigns": {
+        "v": false,
+        "t": 1783538737807
+      },
+      "leads": {
+        "v": false,
+        "t": 1783538739533
+      },
+      "inbox": {
+        "v": false,
+        "t": 1783538740252
+      },
+      "reports": {
+        "v": false,
+        "t": 1783538744437
+      },
+      "onboarding": {
+        "v": false,
+        "t": 1783538746508
+      }
+    }
+  }
 }

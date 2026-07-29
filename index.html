@@ -15116,7 +15116,7 @@ async function registerNfcCard() {
       document.getElementById('nfcCardName').value = '';
       document.getElementById('nfcCardPlaceId').value = '';
       loadNfcCards();
-      alert('Card registered! Tap URL: ' + location.origin + data.tapUrl);
+      alert('Card registered! Program the NFC card with this URL: ' + data.tapUrl);
     } else {
       alert(data.error || 'Failed to register card');
     }
@@ -15135,7 +15135,7 @@ async function loadNfcCards() {
     var data = await r.json();
     if (!data.cards || data.cards.length === 0) { el.textContent = 'No cards registered yet.'; return; }
     el.innerHTML = data.cards.map(function(c) {
-      var tapUrl = location.origin + '/tap/' + encodeURIComponent(c.id || c.name);
+      var tapUrl = c.tapUrl || (window.CAL_API_BASE + '/tap/' + encodeURIComponent(c.id || c.name));
       return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #0f172a;">'
         + '<span>👷 ' + c.name + '</span>'
         + '<a href="' + tapUrl + '" target="_blank" style="color:#3b82f6;font-size:12px;">' + tapUrl + '</a>'

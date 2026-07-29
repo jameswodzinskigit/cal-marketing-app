@@ -434,7 +434,21 @@ async function nfcCards(req: Request, url: URL) {
     const name = String(body.name || "").trim();
     if (!name) return json({ error: "MISSING_NAME" }, 400);
     const cardToken = `card_${randomToken(8)}`;
-    const destinationUrl = String(body.destinationUrl || body.reviewUrl || "") || null;
+    const placeId = String(body.placeId || "").trim();
+    let destinationUrl = String(body.destinationUrl || body.reviewUrl || "").trim() || null;
+    if (!destinationUrl && placeId) {
+      destinationUrl = `https://search.google.com/local/writereview?placeid=${encodeURIComponent(placeId)}`;
+    }
+    if (destinationUrl) {
+      try {
+        const destination = new URL(destinationUrl);
+        if (destination.protocol !== "https:" && destination.protocol !== "http:") {
+          return json({ error: "INVALID_DESTINATION_URL" }, 400);
+        }
+      } catch {
+        return json({ error: "INVALID_DESTINATION_URL" }, 400);
+      }
+    }
     await database("nfc_cards", {
       method: "POST",
       headers: { Prefer: "return=minimal" },
@@ -486,6 +500,24 @@ async function nfcTaps(req: Request, url: URL) {
     const now = Date.now();
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const clicks = taps.filter((tap) => tap.reviewClick).length;
+    const cards = await database(
+      `nfc_cards?select=card_token,driver_name,label&company_id=eq.${company.id}&is_active=eq.true&order=created_at.asc`,
+    ) as Array<Record<string, string | null>>;
+    const cardStats = cards.map((card) => {
+      const own = taps.filter((tap) => tap.person === card.driver_name);
+      const ownClicks = own.filter((tap) => tap.reviewClick).length;
+      return {
+        cardId: card.card_token,
+        name: card.driver_name || card.label,
+        total: own.length,
+        today: own.filter((tap) => new Date(String(tap.tapped_at)).getTime() >= today.getTime()).length,
+        week: own.filter((tap) => new Date(String(tap.tapped_at)).getTime() >= now - 7 * 86400000).length,
+        month: own.filter((tap) => new Date(String(tap.tapped_at)).getTime() >= now - 30 * 86400000).length,
+        clicks: ownClicks,
+        conversion: own.length ? Math.round(ownClicks / own.length * 100) : 0,
+        lastTap: own[0]?.tapped_at || null,
+      };
+    });
     return json({
       total: taps.length,
       today: taps.filter((tap) => new Date(String(tap.tapped_at)).getTime() >= today.getTime()).length,
@@ -494,6 +526,7 @@ async function nfcTaps(req: Request, url: URL) {
       clicks,
       conversion: taps.length ? Math.round(clicks / taps.length * 100) : 0,
       lastTap: taps[0]?.tapped_at || null,
+      cards: cardStats,
       taps,
     });
   }

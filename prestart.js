@@ -64,6 +64,59 @@ try {
     'client config secret aliases'
   );
 
+  const duplicateStatusChecks = "    if (r.status !== 'OK') {\n      const detail = r.error_message || r.status || 'UNKNOWN_ERROR';\n      jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });\n      return;\n    }\n    if (r.status !== 'OK') {\n      const detail = r.error_message || r.status || 'UNKNOWN_ERROR';\n      jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });\n      return;\n    }\n    if (r.status !== 'OK') {\n      const detail = r.error_message || r.status || 'UNKNOWN_ERROR';\n      jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });\n      return;\n    }";
+  const singleStatusCheck = "    if (r.status !== 'OK') {\n      const detail = r.error_message || r.status || 'UNKNOWN_ERROR';\n      jsonResponse(res, 502, { error: 'Google Places request failed: ' + detail, reviews: [] });\n      return;\n    }";
+  server = replaceOnce(server, duplicateStatusChecks, singleStatusCheck, 'remove duplicate Google Places status checks');
+
+  server = replaceOnce(
+    server,
+    "      store['reviews_cache_' + account] = reviews.map(r => ({ ...r, date: r.time ? new Date(r.time * 1000).toISOString() : null }));\n      store['reviews_cache_meta_' + account] = { rating: out.rating, total: out.total, name: out.name, cachedAt: new Date().toISOString() };",
+    "      const incoming = reviews.map(r => ({ ...r, date: r.time ? new Date(r.time * 1000).toISOString() : null }));\n      const existing = Array.isArray(store['reviews_cache_' + account]) ? store['reviews_cache_' + account] : [];\n      const merged = new Map();\n      existing.concat(incoming).forEach(function(review) {\n        const key = [review.time || review.date || '', review.author_name || '', review.rating || '', review.text || ''].join('|');\n        merged.set(key, review);\n      });\n      store['reviews_cache_' + account] = Array.from(merged.values()).sort(function(a, b) {\n        return new Date(b.date || 0) - new Date(a.date || 0);\n      }).slice(0, 1000);\n      const previousMeta = store['reviews_cache_meta_' + account] || {};\n      const snapshots = Array.isArray(previousMeta.snapshots) ? previousMeta.snapshots : [];\n      snapshots.push({ total: out.total, rating: out.rating, capturedAt: new Date().toISOString() });\n      store['reviews_cache_meta_' + account] = { rating: out.rating, total: out.total, name: out.name, cachedAt: new Date().toISOString(), snapshots: snapshots.slice(-365) };",
+    'preserve Google review history and totals snapshots'
+  );
+
+  server = replaceOnce(
+    server,
+    "  const account = qs.account || payload.email;\n  const store = loadMetaStore();\n  const cards = store[`nfc_cards_${account}`] || [];",
+    "  const account = qs.account || payload.email;\n  if (!isKeyAllowed(account, payload)) { jsonResponse(res, 403, { error: 'FORBIDDEN' }); return; }\n  const store = loadMetaStore();\n  const cards = store[`nfc_cards_${account}`] || [];",
+    'protect NFC card reads by tenant'
+  );
+
+  server = replaceOnce(
+    server,
+    "  const account = qs.account || payload.email;\n  try {\n    const tapLog = path.join(__dirname, '.nfc-taps.json');",
+    "  const account = qs.account || payload.email;\n  if (!isKeyAllowed(account, payload)) { jsonResponse(res, 403, { error: 'FORBIDDEN', taps: [], stats: {} }); return; }\n  try {\n    const tapLog = path.join(__dirname, '.nfc-taps.json');",
+    'protect NFC tap reads by tenant'
+  );
+
+  server = replaceOnce(
+    server,
+    "  const acct = account || payload.email;\n  const store = loadMetaStore();",
+    "  const acct = account || payload.email;\n  if (!isKeyAllowed(acct, payload)) { jsonResponse(res, 403, { error: 'FORBIDDEN' }); return; }\n  const store = loadMetaStore();",
+    'protect NFC card creation by tenant'
+  );
+
+  server = replaceOnce(
+    server,
+    "  const account = body.account || payload.email;\n  const name = (body.name || '').trim();",
+    "  const account = body.account || payload.email;\n  if (!isKeyAllowed(account, payload)) { jsonResponse(res, 403, { error: 'FORBIDDEN' }); return; }\n  const name = (body.name || '').trim();",
+    'protect NFC card deletion by tenant'
+  );
+
+  server = replaceOnce(
+    server,
+    "  const accountId = qs.accountId || qs.account || payload.email;\n  const cardId = qs.cardId || '';",
+    "  const accountId = qs.accountId || qs.account || payload.email;\n  if (!isKeyAllowed(accountId, payload)) { jsonResponse(res, 403, { error: 'FORBIDDEN' }); return; }\n  const cardId = qs.cardId || '';",
+    'protect NFC stats by tenant'
+  );
+
+  server = replaceOnce(
+    server,
+    "  const account = qs.account || payload.email;\n  const period = qs.period || 'month';",
+    "  const account = qs.account || payload.email;\n  if (!isKeyAllowed(account, payload)) { jsonResponse(res, 403, { error: 'FORBIDDEN' }); return; }\n  const period = qs.period || 'month';",
+    'protect driver stats by tenant'
+  );
+
   fs.writeFileSync(serverPath, server);
 
   if (fs.existsSync(indexPath)) {
@@ -76,33 +129,10 @@ try {
       'prevent automatic Apex selection for master users'
     );
 
-    html = replaceAll(
-      html,
-      "refreshTenantContext(acctId || 'a1');",
-      "if (acctId) refreshTenantContext(acctId);",
-      'remove forced Apex tenant restore'
-    );
-
-    html = replaceAll(
-      html,
-      "setCurrentAcct(acctId || 'a1');",
-      "if (acctId) setCurrentAcct(acctId);",
-      'remove forced Apex account selection'
-    );
-
-    html = replaceAll(
-      html,
-      "refreshTenantContext(savedId||'a1');",
-      "if (savedId) refreshTenantContext(savedId);",
-      'remove forced Apex fallback during launch'
-    );
-
-    html = replaceAll(
-      html,
-      "setCurrentAcct(savedId||'a1');",
-      "if (savedId) setCurrentAcct(savedId);",
-      'remove forced Apex fallback account'
-    );
+    html = replaceAll(html, "refreshTenantContext(acctId || 'a1');", "if (acctId) refreshTenantContext(acctId);", 'remove forced Apex tenant restore');
+    html = replaceAll(html, "setCurrentAcct(acctId || 'a1');", "if (acctId) setCurrentAcct(acctId);", 'remove forced Apex account selection');
+    html = replaceAll(html, "refreshTenantContext(savedId||'a1');", "if (savedId) refreshTenantContext(savedId);", 'remove forced Apex fallback during launch');
+    html = replaceAll(html, "setCurrentAcct(savedId||'a1');", "if (savedId) setCurrentAcct(savedId);", 'remove forced Apex fallback account');
 
     html = replaceOnce(
       html,
@@ -114,7 +144,7 @@ try {
     fs.writeFileSync(indexPath, html);
   }
 
-  console.log('[prestart] CAL OS startup, login, and account-selection safeguards complete.');
+  console.log('[prestart] CAL OS startup, reviews, NFC, and tenant safeguards complete.');
 } catch (error) {
   console.error('[prestart] Startup validation failed:', error.message);
   process.exit(1);

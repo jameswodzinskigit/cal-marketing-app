@@ -6,6 +6,7 @@
   "scripts": {
     "prestart": "node prestart.js",
     "start": "node server.js",
+    "test": "node --test",
     "install-deps": "npm install"
   },
   "dependencies": {

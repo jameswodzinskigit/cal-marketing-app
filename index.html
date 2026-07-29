@@ -8,6 +8,22 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+<script>
+// GitHub Pages hosts the frontend; Supabase Edge Functions host every API.
+(function(){
+  var API_BASE = 'https://hgtpbxohspuybqsorman.supabase.co/functions/v1/cal-api';
+  window.CAL_API_BASE = API_BASE;
+  var nativeFetch = window.fetch.bind(window);
+  window.fetch = function(resource, options){
+    if(typeof resource === 'string'){
+      if(resource.indexOf('/api/') === 0 || resource.indexOf('/tap/') === 0 || resource.indexOf('/d/') === 0){
+        resource = API_BASE + resource;
+      }
+    }
+    return nativeFetch(resource, options);
+  };
+})();
+</script>
 <!--
   CAL OS v5 — Frontend Preview
   Roles: agency (full access), admin (own account), user (tasks/notes/files/inbox only)
@@ -1299,7 +1315,7 @@ select.input-std{appearance:none;background-image:url("data:image/svg+xml,%3Csvg
     <p class="login-sub" id="login-main-sub">CLIENT OPERATING SYSTEM — v1.0</p>
     <div id="signin-panel">
       <div class="login-form" style="align-items:center">
-        <div id="cal-login-form" style="width:100%;margin-bottom:12px">
+        <div id="cal-login-form" style="display:none;width:100%;margin-bottom:12px">
           <div class="field" style="margin-bottom:10px">
             <label style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Email</label>
             <input class="input-std" id="cal-login-email" type="email" placeholder="you@company.com" autocomplete="email" onkeydown="if(event.key==='Enter')document.getElementById('cal-login-pw').focus()" style="width:100%;margin-top:4px">
@@ -1315,7 +1331,7 @@ select.input-std{appearance:none;background-image:url("data:image/svg+xml,%3Csvg
           <button onclick="calDoLogin()" id="cal-login-btn" style="width:100%;background:var(--gold);color:#000;font-weight:900;border:none;padding:13px;border-radius:10px;font-size:15px;cursor:pointer">Sign In &rarr;</button>
         </div>
         <!-- Send magic link row -->
-        <div style="text-align:center;margin-top:4px;margin-bottom:2px">
+        <div style="display:none;text-align:center;margin-top:4px;margin-bottom:2px">
           <a href="javascript:void(0)" onclick="showMagicLinkForm()" style="font-size:12px;font-weight:700;color:var(--muted);text-decoration:none">Forgot password? Send me a sign-in link →</a>
         </div>
         <!-- Magic link form (hidden by default) -->
@@ -1331,7 +1347,7 @@ select.input-std{appearance:none;background-image:url("data:image/svg+xml,%3Csvg
         <div class="login-error" id="login-error" style="width:100%;text-align:center;margin-top:8px">Access not granted. Contact your administrator.</div>
         <!-- Agency PIN login -->
         <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
-          <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;text-align:center;margin-bottom:8px">Agency Login</div>
+          <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;text-align:center;margin-bottom:8px">Company PIN</div>
           <div style="display:flex;gap:8px;justify-content:center">
             <input id="agency-pin" type="password" maxlength="6" placeholder="PIN" style="width:100px;text-align:center;font-size:18px;font-weight:900;border:2px solid var(--gold);border-radius:8px;padding:8px 12px;background:var(--surface);color:var(--text)" onkeydown="if(event.key==='Enter')agencyPinLogin()">
             <button id="agency-pin-btn" onclick="agencyPinLogin()" style="background:var(--gold);color:#000;font-weight:900;border:none;padding:10px 18px;border-radius:8px;font-size:14px;cursor:pointer">Enter →</button>
@@ -4232,6 +4248,7 @@ function agencyPinLogin(){
     try{localStorage.setItem('cal-user-role',d.role||'superadmin');}catch(e){}
     try{localStorage.setItem('cal-display-name',d.displayName||'Agency Admin');}catch(e){}
     try{localStorage.setItem('cal-user-email',d.email||'admin@cal.marketing');}catch(e){}
+    try{if(d.accounts&&d.accounts[0])localStorage.setItem('cal-current-acct',d.accounts[0]);}catch(e){}
     // Page reload — server will verify the token and show the dashboard
     window.location.replace('/');
   })
@@ -10795,11 +10812,6 @@ function sendWaReply() {
    agency users.
 ============================================================ */
 (function(){
-  var AGENCY_USERS={
-    'chris@cal.marketing':{pw:'CAL_D1gital$2026!',role:'agency',name:'Chris Kraich',initials:'CK',username:'chris',phone:'(845) 957-9261',title:'Founder / Agency',companyId:'cal'},
-    'james@cal.marketing':{pw:'James_CAL_26!',role:'agency',name:'James Wodzinski',initials:'JW',username:'james',phone:'(845) 957-9261',title:'Agency Partner',companyId:'cal'},
-    'matt@cal.marketing':{pw:'Matt_CAL_26!',role:'agency',name:'Matt Gallagher',initials:'MG',username:'matt',phone:'(845) 957-9261',title:'Agency Partner',companyId:'cal'}
-  };
   var FIXED_SCREEN_SET={help:true,plans:true,billing:true,whitelabel:true};
 
   function qs(sel,root){ return (root||document).querySelector(sel); }
@@ -10865,25 +10877,21 @@ function sendWaReply() {
 
   function seedAgencyUsers(){
     window.USERS=window.USERS||{};
-    // Always force-write agency users — never let localStorage override them
-    window.USERS['chris@cal.marketing']  = {pw:'CAL_D1gital$2026!',role:'agency',name:'Chris Kraich',initials:'CK',username:'chris',phone:'(845) 957-9261',title:'Founder / Agency',companyId:'cal'};
-    window.USERS['matt@cal.marketing']   = {pw:'Matt_CAL_26!',role:'agency',name:'Matt Gallagher',initials:'MG',username:'matt',phone:'(845) 957-9261',title:'Agency Partner',companyId:'cal'};
-    window.USERS['james@cal.marketing']  = {pw:'James_CAL_26!',role:'agency',name:'James Wodzinski',initials:'JW',username:'james',phone:'(845) 957-9261',title:'Agency Partner',companyId:'cal'};
-    window.USERS['test@cal.marketing']   = {pw:'CAL_D1gital$2026!',role:'test',name:'Test User',initials:'TU',username:'testuser',phone:'',title:'Owner / Tester',companyId:'cal'};
-    window.USERS['client@apexlegal.com'] = {pw:'ApexClient2025!',role:'admin',name:'Alex Torres',initials:'AT',username:'alextorres',company:'Apex Legal Group',phone:'(786) 555-0200',title:'Marketing Director',companyId:'apexlegal'};
-    window.USERS['staff@apexlegal.com']  = {pw:'StaffUser2025!',role:'user',name:'Maria Santos',initials:'MS',username:'mariasantos',company:'Apex Legal Group',phone:'(786) 555-0300',title:'Staff Member',companyId:'apexlegal'};
-    // Sync to localStorage but never let localStorage ghost entries override agency accounts
+    // Remove credentials left behind by older browser-only builds.
+    Object.keys(window.USERS).forEach(function(email){
+      if(window.USERS[email]){
+        delete window.USERS[email].pw;
+        delete window.USERS[email].password;
+      }
+    });
     try {
       var saved = JSON.parse(localStorage.getItem('cal-users') || '{}');
-      // Remove any corrupted entries for agency/test domains
       Object.keys(saved).forEach(function(email){
-        if(email.indexOf('@cal.marketing') > -1) delete saved[email];
+        if(saved[email]){
+          delete saved[email].pw;
+          delete saved[email].password;
+        }
       });
-      // Write fresh agency entries
-      saved['chris@cal.marketing']  = window.USERS['chris@cal.marketing'];
-      saved['matt@cal.marketing']   = window.USERS['matt@cal.marketing'];
-      saved['james@cal.marketing']  = window.USERS['james@cal.marketing'];
-      saved['test@cal.marketing']   = window.USERS['test@cal.marketing'];
       localStorage.setItem('cal-users', JSON.stringify(saved));
     } catch(e) {}
   }
@@ -15108,7 +15116,7 @@ async function registerNfcCard() {
       document.getElementById('nfcCardName').value = '';
       document.getElementById('nfcCardPlaceId').value = '';
       loadNfcCards();
-      alert('Card registered! Tap URL: ' + location.origin + data.tapUrl);
+      alert('Card registered! Program the NFC card with this URL: ' + data.tapUrl);
     } else {
       alert(data.error || 'Failed to register card');
     }
@@ -15127,7 +15135,7 @@ async function loadNfcCards() {
     var data = await r.json();
     if (!data.cards || data.cards.length === 0) { el.textContent = 'No cards registered yet.'; return; }
     el.innerHTML = data.cards.map(function(c) {
-      var tapUrl = location.origin + '/tap/' + encodeURIComponent(c.id || c.name);
+      var tapUrl = c.tapUrl || (window.CAL_API_BASE + '/tap/' + encodeURIComponent(c.id || c.name));
       return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #0f172a;">'
         + '<span>👷 ' + c.name + '</span>'
         + '<a href="' + tapUrl + '" target="_blank" style="color:#3b82f6;font-size:12px;">' + tapUrl + '</a>'
